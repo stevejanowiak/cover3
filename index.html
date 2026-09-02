@@ -195,6 +195,20 @@
   .board td.matchup .covered{color:var(--gold); font-weight:700;}
   .board td.line{font-family:'IBM Plex Mono',monospace; color:var(--muted); font-size:13px; white-space:nowrap;}
   .board td.result{font-family:'IBM Plex Mono',monospace; font-size:13px; white-space:nowrap; color:var(--muted);}
+  .board td.result.live{color:var(--chalk);}
+  .board td.result .ing{
+    color:var(--win); font-family:'Inter',sans-serif; font-size:10px;
+    letter-spacing:0.08em; text-transform:uppercase; margin-left:5px;
+  }
+  .livebar{
+    display:flex; align-items:center; gap:0; font-size:11px;
+    color:var(--muted-2); margin:12px 0 0 0; line-height:1.4;
+  }
+  .livebar .dot{
+    width:6px; height:6px; border-radius:50%; background:var(--win);
+    margin-right:7px; flex-shrink:0;
+  }
+  .livebar.stale .dot{background:var(--muted-2);}
   .board td.pick{white-space:nowrap; font-size:13px;}
   .pickcell .team{font-weight:600; color:var(--chalk);}
   .pickcell .pts{font-family:'IBM Plex Mono',monospace; color:var(--muted-2); margin-left:5px;}
@@ -386,6 +400,96 @@ function fmtSpread(n){ n = Number(n); return n>0 ? '+'+n : String(n); }
 function spreadLabel(game, side){ const s = Number(game.spread); return side==='home' ? fmtSpread(s) : fmtSpread(-s); }
 function weeksForYear(year){ return HISTORICAL[year] || []; }
 
+/* ===================== live scores (ESPN scoreboard, read-only) =====================
+   Fills in scores for games Steve has NOT already recorded. Anything recorded in
+   season.json always wins — the file is the record, this is just a head start on it.
+   A matchup is only accepted when BOTH teams line up with the same ESPN event, so
+   Michigan/Michigan State and Washington/Washington State can never cross over.
+   Every failure here is silent: the page renders exactly as it would offline. */
+const LIVE_URL = 'https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?groups=80&limit=400';
+const LIVE_REFRESH_MS = 60000;
+let liveState = { status: 'idle', at: null, filled: 0 };
+
+function normTeam(s){
+  return (s ?? '').toString().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')       // José -> Jose
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ').trim()
+    .replace(/ st$/, ' state');                          // "Boise St" -> "boise state"
+}
+
+// The week live scores may touch: the most recent week of the current season.
+function liveTargetWeek(){
+  const weeks = weeksForYear(CURRENT_YEAR);
+  return weeks.length ? weeks[weeks.length - 1] : null;
+}
+
+function espnEventsToIndex(data){
+  const out = [];
+  (data.events || []).forEach(ev => {
+    const comp = (ev.competitions && ev.competitions[0]) || {};
+    const cs = comp.competitors || [];
+    const home = cs.find(c => c.homeAway === 'home');
+    const away = cs.find(c => c.homeAway === 'away');
+    if (!home || !away) return;
+    const aliases = c => new Set([c.team && c.team.location, c.team && c.team.displayName,
+                                  c.team && c.team.shortDisplayName, c.team && c.team.abbreviation]
+                                  .filter(Boolean).map(normTeam));
+    const st = (ev.status && ev.status.type) || {};
+    out.push({
+      homeAliases: aliases(home), awayAliases: aliases(away),
+      homeScore: home.score, awayScore: away.score,
+      state: st.state || 'pre',
+    });
+  });
+  return out;
+}
+
+function applyLiveScores(index){
+  const week = liveTargetWeek();
+  if (!week) return 0;
+  let filled = 0;
+  week.games.forEach(g => {
+    // Clear only what a previous live pass wrote; never touch recorded scores.
+    if (g.__live){ g.homeScore = ''; g.awayScore = ''; delete g.__live; }
+    const recorded = g.homeScore !== '' && g.homeScore != null && g.awayScore !== '' && g.awayScore != null;
+    if (recorded) return;
+    const h = normTeam(g.home), a = normTeam(g.away);
+    const hits = index.filter(e => e.homeAliases.has(h) && e.awayAliases.has(a));
+    if (hits.length !== 1) return;                       // 0 or ambiguous -> leave alone
+    const e = hits[0];
+    if (e.state !== 'in' && e.state !== 'post') return;  // not started, nothing to show
+    if (e.homeScore == null || e.awayScore == null) return;
+    g.homeScore = Number(e.homeScore);
+    g.awayScore = Number(e.awayScore);
+    g.__live = e.state;                                  // 'in' or 'post'
+    filled += 1;
+  });
+  return filled;
+}
+
+function refreshLiveScores(){
+  if (!liveTargetWeek()) return;
+  fetch(LIVE_URL, { cache: 'no-store' })
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(d => {
+      const filled = applyLiveScores(espnEventsToIndex(d));
+      liveState = { status: 'ok', at: new Date(), filled };
+      render();
+    })
+    .catch(() => { liveState = { status: 'error', at: liveState.at, filled: liveState.filled }; render(); });
+}
+
+function liveBarHtml(){
+  if (liveState.status === 'idle') return '';
+  const t = liveState.at ? liveState.at.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : null;
+  if (liveState.status === 'error'){
+    return `<p class="livebar stale"><span class="dot"></span>Live scores unavailable right now${t?` &mdash; last updated ${esc(t)}`:''}. Recorded scores are unaffected.</p>`;
+  }
+  return `<p class="livebar"><span class="dot"></span>Live from ESPN &mdash; updated ${esc(t)}. Scores Steve has already recorded always take precedence.</p>`;
+}
+
 /* ===================== utils ===================== */
 function esc(s){ return (s??'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function gameStatusPill(decided){
@@ -412,7 +516,7 @@ function renderWeekTab(){
   let html = `<div class="card">
     <div class="eyebrow">${esc(CURRENT_YEAR)} season</div>
     <div class="row"><div><label>Week</label><select id="weekSel">${labels.map(w=>`<option ${w===state.week?'selected':''}>${esc(w)}</option>`).join('') || '<option>No weeks yet</option>'}</select></div></div>
-    <p class="footnote">Picks come in through Slack and get added here as they land &mdash; this page is read-only.</p>
+    <p class="footnote">Read-only. Picks come in through Slack and are added here when the week is recorded; scores update on their own from ESPN as games are played.</p>
   </div>`;
 
   if (!state.week){
@@ -424,6 +528,7 @@ function renderWeekTab(){
 
   const week = weeks.find(w=>w.label===state.week);
   const games = week.games;
+  const isLiveWeek = week === liveTargetWeek();
 
   // Column order matches the Slack summary: Man, Guy, Gin.
   const COLS = ['Dan','Matt','Steve'];
@@ -448,7 +553,7 @@ function renderWeekTab(){
       <td class="matchup">${g.away?side(g.away):'&mdash;'}<span class="at">@</span>${g.home?side(g.home):'&mdash;'}
         <span class="sub">${lineTxt}${hasScore?` &middot; ${scoreTxt}`:''}</span></td>
       <td class="line">${lineTxt}</td>
-      <td class="result">${scoreTxt}</td>
+      <td class="result${g.__live ? ' live' : ''}">${scoreTxt}${g.__live === 'in' ? '<span class="ing"> live</span>' : ''}</td>
       ${cells}
     </tr>`;
   }).join('');
@@ -474,8 +579,11 @@ function renderWeekTab(){
     </table></div>
     ${anyPicks
       ? `<div class="wkline" style="margin-top:15px;">${summary}</div>
-         <p class="footnote">${allDecided ? 'Final.' : 'Running totals &mdash; these move as games go final.'}</p>`
+         <p class="footnote">${allDecided ? 'Final.'
+            : liveState.status === 'ok' ? 'Running totals &mdash; these move as games go final.'
+            : 'Running totals as of the last update &mdash; scores are entered after the games.'}</p>`
       : `<p class="hint" style="margin-top:15px;">No picks in yet.</p>`}
+    ${isLiveWeek ? liveBarHtml() : ''}
   </div>`;
 
   app.innerHTML = html;
@@ -637,6 +745,10 @@ document.getElementById('tabnav').addEventListener('click', (e)=>{
 });
 
 render();
+
+// Live scores: one pass now, then quietly on a timer while the page is open.
+refreshLiveScores();
+setInterval(refreshLiveScores, LIVE_REFRESH_MS);
 
 </script>
 
