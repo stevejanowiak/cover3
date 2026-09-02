@@ -186,6 +186,63 @@
   .game .status{margin-left:auto; font-size:12px;}
   .game.decided .side{cursor:default;}
 
+  /* week board — one row per game, one column per person */
+  .scrollx{overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 -4px; padding:0 4px;}
+  .board{min-width:640px;}
+  .board th.person{text-align:left; color:var(--muted-2);}
+  .board td.matchup{line-height:1.35;}
+  .board td.matchup .at{color:var(--muted-2); margin:0 3px;}
+  .board td.matchup .covered{color:var(--gold); font-weight:700;}
+  .board td.line{font-family:'IBM Plex Mono',monospace; color:var(--muted); font-size:13px; white-space:nowrap;}
+  .board td.result{font-family:'IBM Plex Mono',monospace; font-size:13px; white-space:nowrap; color:var(--muted);}
+  .board td.pick{white-space:nowrap; font-size:13px;}
+  .pickcell .team{font-weight:600; color:var(--chalk);}
+  .pickcell .pts{font-family:'IBM Plex Mono',monospace; color:var(--muted-2); margin-left:5px;}
+  .pickcell.won .team{color:var(--win);}
+  .pickcell.won .pts{color:var(--win);}
+  .pickcell.lost .team{color:var(--loss); text-decoration:line-through; text-decoration-thickness:1px;}
+  .pickcell.none{color:var(--muted-2);}
+  .board tr.decided td{background:rgba(255,255,255,0.012);}
+  .board td.matchup .sub{
+    display:none; font-family:'IBM Plex Mono',monospace; font-size:11px;
+    color:var(--muted-2); margin-top:3px;
+  }
+  /* On a phone the table becomes one stacked block per game: matchup and line
+     on top, the three picks side by side underneath. Team names are far too
+     long to keep six columns on a 390px screen. */
+  @media (max-width:720px){
+    .scrollx{overflow-x:visible; margin:0; padding:0;}
+    .board, .board tbody, .board tr, .board td{display:block;}
+    .board{min-width:0;}
+    .board thead{display:none;}
+    .board tr{
+      border:1px solid var(--line); border-radius:5px;
+      padding:11px 12px 9px 12px; margin-bottom:8px; background:var(--panel-2);
+    }
+    .board tr.decided td{background:transparent;}
+    .board td{border:none; padding:0;}
+    .board td.matchup{font-size:14px; margin-bottom:9px;}
+    .board td.matchup .sub{display:block;}
+    .board td.line, .board td.result{display:none;}
+    .board td.pick{
+      display:inline-block; width:33.3%; vertical-align:top;
+      font-size:12px; white-space:normal; padding-right:6px;
+    }
+    .board td.pick::before{
+      content:attr(data-who); display:block; margin-bottom:2px;
+      color:var(--muted-2); font-size:9px; letter-spacing:0.1em; text-transform:uppercase;
+    }
+    .wkline{gap:14px; font-size:12px;}
+  }
+
+  .wkline{
+    display:flex; flex-wrap:wrap; gap:18px; align-items:baseline;
+    font-size:13px; color:var(--muted); margin-top:2px;
+  }
+  .wkline .who{color:var(--chalk); font-weight:600;}
+  .wkline .pts{font-family:'IBM Plex Mono',monospace; color:var(--gold); font-weight:600;}
+  .wkline .lead{color:var(--gold);}
+
   .standing-row .rank{
     font-family:'Anton',sans-serif; font-size:20px; color:var(--muted-2); width:28px; display:inline-block;
   }
@@ -355,7 +412,7 @@ function renderWeekTab(){
   let html = `<div class="card">
     <div class="eyebrow">${esc(CURRENT_YEAR)} season</div>
     <div class="row"><div><label>Week</label><select id="weekSel">${labels.map(w=>`<option ${w===state.week?'selected':''}>${esc(w)}</option>`).join('') || '<option>No weeks yet</option>'}</select></div></div>
-    <p class="footnote">Picks come in by email and get added here after each week &mdash; this page is read-only.</p>
+    <p class="footnote">Picks come in through Slack and get added here as they land &mdash; this page is read-only.</p>
   </div>`;
 
   if (!state.week){
@@ -368,49 +425,58 @@ function renderWeekTab(){
   const week = weeks.find(w=>w.label===state.week);
   const games = week.games;
 
+  // Column order matches the Slack summary: Man, Guy, Gin.
+  const COLS = ['Dan','Matt','Steve'];
+  const results = {}; PEOPLE.forEach(p=> results[p] = scoreWeekForPerson(games, p));
+  const allDecided = games.length>0 && games.every(g=>atsWinner(g)!==null);
+  const anyPicks = games.some(g=>g.picks && Object.keys(g.picks).length);
+
+  const rows = games.map(g=>{
+    const decided = atsWinner(g);
+    const hasScore = g.homeScore!==''&&g.homeScore!=null&&g.awayScore!==''&&g.awayScore!=null;
+    const side = t => decided===t ? `<span class="covered">${esc(t)}</span>` : esc(t);
+    const cells = COLS.map(p=>{
+      const who = esc(nick(p)); // shown as a label only on the stacked mobile layout
+      const pk = g.picks && g.picks[p];
+      if (!pk) return `<td class="pick" data-who="${who}"><span class="pickcell none">&mdash;</span></td>`;
+      const cls = !decided ? '' : (pk.pick===decided ? 'won' : 'lost');
+      return `<td class="pick" data-who="${who}"><span class="pickcell ${cls}"><span class="team">${esc(pk.pick)}</span><span class="pts">${pk.conf}</span></span></td>`;
+    }).join('');
+    const lineTxt = g.spread!==''&&g.spread!=null ? `${esc(g.home)} ${fmtSpread(g.spread)}` : '&mdash;';
+    const scoreTxt = hasScore ? `${g.awayScore}&ndash;${g.homeScore}` : '&mdash;';
+    return `<tr class="${decided?'decided':''}">
+      <td class="matchup">${g.away?side(g.away):'&mdash;'}<span class="at">@</span>${g.home?side(g.home):'&mdash;'}
+        <span class="sub">${lineTxt}${hasScore?` &middot; ${scoreTxt}`:''}</span></td>
+      <td class="line">${lineTxt}</td>
+      <td class="result">${scoreTxt}</td>
+      ${cells}
+    </tr>`;
+  }).join('');
+
+  const anyDecided = games.some(g=>atsWinner(g)!==null);
+  const best = Math.max(...COLS.map(p=>results[p].total));
+  const summary = COLS.map(p=>{
+    const r = results[p];
+    const lead = allDecided && r.total===best && best>0;
+    // Before kickoff "0 0/5" is noise — show what they've staked instead.
+    const detail = !r.bet ? 'no picks'
+      : !anyDecided ? `${r.placed} of ${POOL} pts on ${r.bet} game${r.bet===1?'':'s'}`
+      : `${r.correct}/${r.bet}${r.bonus?` &middot; +${r.bonus} bonus`:''}`;
+    return `<span><span class="who${lead?' lead':''}">${esc(nick(p))}</span>
+      ${anyDecided?`<span class="pts">${r.total}</span> `:''}${detail}</span>`;
+  }).join('');
+
   html += `<div class="card">
-    <div class="eyebrow">${esc(state.week)} &middot; Matchups &amp; spreads</div>
-    <table><thead><tr><th>Home</th><th>Away</th><th class="num">Spread</th><th class="num">Score</th></tr></thead><tbody>
-      ${games.map(g=>{
-        const hasScore = g.homeScore!==''&&g.homeScore!=null&&g.awayScore!==''&&g.awayScore!=null;
-        return `<tr><td>${g.home?esc(g.home):'&mdash;'}</td><td>${g.away?esc(g.away):'&mdash;'}</td>
-          <td class="num">${g.spread!==''&&g.spread!=null?fmtSpread(g.spread):'—'}</td>
-          <td class="num">${hasScore?`${g.homeScore}&ndash;${g.awayScore}`:'—'}</td></tr>`;
-      }).join('')}
-    </tbody></table>
+    <div class="eyebrow">${esc(state.week)} &middot; the board</div>
+    <div class="scrollx"><table class="board">
+      <thead><tr><th>Matchup</th><th class="lineh">Line</th><th class="resulth">Score</th>${COLS.map(p=>`<th class="person">${esc(nick(p))}</th>`).join('')}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    ${anyPicks
+      ? `<div class="wkline" style="margin-top:15px;">${summary}</div>
+         <p class="footnote">${allDecided ? 'Final.' : 'Running totals &mdash; these move as games go final.'}</p>`
+      : `<p class="hint" style="margin-top:15px;">No picks in yet.</p>`}
   </div>`;
-
-  PEOPLE.forEach(person=>{
-    const hasPicks = games.some(g=>g.picks && g.picks[person]);
-    html += `<div class="card">
-      <div class="eyebrow">${esc(nick(person))}'s picks</div>`;
-    if (!hasPicks){
-      html += `<p class="hint">No picks in yet.</p>`;
-    } else {
-      const r = scoreWeekForPerson(games, person);
-      const rows = games.map(g=>{
-        const pk = g.picks[person];
-        if (!pk) return `<tr><td>${esc(g.home)} vs ${esc(g.away)}</td><td class="num">&mdash;</td><td class="num">skipped</td></tr>`;
-        const decided = atsWinner(g);
-        const result = !decided ? 'pending' : (pk.pick===decided ? 'won' : 'lost');
-        return `<tr><td>${esc(pk.pick)} ${fmtSpread(pk.pick===g.home?g.spread:-g.spread)}</td><td class="num">${pk.conf}</td><td class="num"><span class="pill ${result==='won'?'win':result==='lost'?'loss':'pending'}">${result}</span></td></tr>`;
-      }).join('');
-      html += `<table><thead><tr><th>Pick</th><th class="num">Pts</th><th class="num">Result</th></tr></thead><tbody>${rows}</tbody></table>
-        <p class="footnote">${r.placed} of ${POOL} points placed${r.bonus?` &middot; bonus earned (+${r.bonus})`:''}${r.allDecided?` &middot; ${r.total} pts this week`:''}</p>`;
-    }
-    html += `</div>`;
-  });
-
-  const allFilled = games.every(g=>g.home && g.away);
-  if (allFilled){
-    html += `<div class="card"><div class="eyebrow">${esc(state.week)} scoreboard</div>
-      <table><thead><tr><th>Player</th><th class="num">Correct</th><th class="num">Points</th><th class="num">Bonus</th><th class="num">Total</th></tr></thead><tbody>
-      ${PEOPLE.map(p=>{
-        const r = scoreWeekForPerson(games, p);
-        return `<tr><td>${esc(nick(p))}</td><td class="num">${r.correct}/${r.bet}</td><td class="num">${r.earned}</td><td class="num">${r.bonus?('+'+r.bonus):'—'}</td><td class="num" style="color:var(--gold); font-weight:600;">${r.total}</td></tr>`;
-      }).join('')}
-      </tbody></table></div>`;
-  }
 
   app.innerHTML = html;
   attachWeekSelector(labels);
