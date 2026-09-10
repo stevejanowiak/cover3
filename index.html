@@ -346,23 +346,28 @@ function atsWinner(game){
   const margin = Number(game.awayScore) - Number(game.homeScore);
   return margin < Number(game.spread) ? game.home : game.away;
 }
+// `bet` = games staked, played or not. `decided` = of those, the ones that have
+// finished. A record must read correct/DECIDED — using `bet` counts games that
+// haven't kicked off as losses. Kept identical to lib.js.
 function scoreWeekForPerson(games, person){
-  let earned=0, placed=0, correct=0, bet=0;
+  let earned=0, placed=0, correct=0, bet=0, decided=0, pending=0;
   games.forEach(g=>{
     const pk = g.picks && g.picks[person];
     const winner = atsWinner(g);
     if (!pk || !pk.conf) return;
     placed += Number(pk.conf);
     bet += 1;
-    if (winner && pk.pick === winner){ earned += Number(pk.conf); correct += 1; }
+    if (!winner){ pending += 1; return; }
+    decided += 1;
+    if (pk.pick === winner){ earned += Number(pk.conf); correct += 1; }
   });
   const allDecided = games.every(g => atsWinner(g) !== null);
   const bonus = (allDecided && placed>0 && earned===placed) ? bet : 0;
-  return {earned, placed, correct, bet, bonus, total: earned+bonus, allDecided};
+  return {earned, placed, correct, bet, decided, pending, bonus, total: earned+bonus, allDecided};
 }
 function seasonStandings(weeks){
   const totals = {};
-  PEOPLE.forEach(p=> totals[p] = {points:0, correct:0, bet:0, bonus:0, weeksWon:0, weeksPlayed:0});
+  PEOPLE.forEach(p=> totals[p] = {points:0, correct:0, bet:0, decided:0, pending:0, bonus:0, weeksWon:0, weeksPlayed:0});
   weeks.forEach(w=>{
     const results = {};
     PEOPLE.forEach(p=> results[p] = scoreWeekForPerson(w.games, p));
@@ -370,7 +375,7 @@ function seasonStandings(weeks){
     let best=-Infinity, bestPeople=[];
     PEOPLE.forEach(p=>{
       const r = results[p];
-      totals[p].points += r.total; totals[p].correct += r.correct; totals[p].bet += r.bet; totals[p].bonus += r.bonus;
+      totals[p].points += r.total; totals[p].correct += r.correct; totals[p].bet += r.bet; totals[p].decided += r.decided; totals[p].pending += r.pending; totals[p].bonus += r.bonus;
       if (r.bet>0) totals[p].weeksPlayed += 1;
       if (allDecided && r.total>best){ best=r.total; bestPeople=[p]; }
       else if (allDecided && r.total===best){ bestPeople.push(p); }
@@ -585,7 +590,7 @@ function renderWeekTab(){
     // Before kickoff "0 0/5" is noise — show what they've staked instead.
     const detail = !r.bet ? 'no picks'
       : !anyDecided ? `${r.placed} of ${POOL} pts on ${r.bet} game${r.bet===1?'':'s'}`
-      : `${r.correct}/${r.bet}${r.bonus?` &middot; +${r.bonus} bonus`:''}`;
+      : `${r.correct}/${r.decided}${r.pending?` &middot; ${r.pending} to play`:''}${r.bonus?` &middot; +${r.bonus} bonus`:''}`;
     return `<span><span class="who${lead?' lead':''}">${esc(nick(p))}</span>
       ${anyDecided?`<span class="pts">${r.total}</span> `:''}${detail}</span>`;
   }).join('');
@@ -670,7 +675,7 @@ function renderStandingsTab(){
 
   const rows = ranked.map((p,i)=>`<tr class="standing-row ${i===0?'lead':''}">
     <td><span class="rank">${i+1}</span>${esc(nick(p))}</td>
-    <td class="num">${totals[p].correct}/${totals[p].bet}</td>
+    <td class="num">${totals[p].correct}/${totals[p].decided}${totals[p].pending?`<span class="footnote" style="display:block;">${totals[p].pending} to play</span>`:''}</td>
     <td class="num">${totals[p].bonus}</td>
     <td class="num">${totals[p].weeksWon}</td>
     <td class="num" style="font-weight:700; color:${i===0?'var(--gold)':'var(--chalk)'};">${totals[p].points}</td>
@@ -719,10 +724,10 @@ function renderHistoryTab(){
   const totals = seasonStandings(allWeeks);
   const ranked = PEOPLE.slice().sort((a,b)=>totals[b].points-totals[a].points);
   const rows = ranked.map((p,i)=>{
-    const pct = totals[p].bet ? Math.round((totals[p].correct/totals[p].bet)*1000)/10 : 0;
+    const pct = totals[p].decided ? Math.round((totals[p].correct/totals[p].decided)*1000)/10 : 0;
     return `<tr class="standing-row ${i===0?'lead':''}">
       <td><span class="rank">${i+1}</span>${esc(nick(p))}</td>
-      <td class="num">${totals[p].correct}/${totals[p].bet}</td>
+      <td class="num">${totals[p].correct}/${totals[p].decided}</td>
       <td class="num">${pct}%</td>
       <td class="num">${totals[p].bonus}</td>
       <td class="num" style="font-weight:700; color:${i===0?'var(--gold)':'var(--chalk)'};">${totals[p].points}</td>
